@@ -26,7 +26,7 @@ export async function downloadFromS3(file_key: string): Promise<string> {
         //open the writable stream and write the file
         const file = fs.createWriteStream(file_name);
         file.on("open", function () {
-          // @ts-expect-error
+          // @ts-expect-error: S3 types are not compatible here
           obj.Body?.pipe(file).on("finish", () => {
             return resolve(file_name);
           });

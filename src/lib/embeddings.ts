@@ -1,11 +1,3 @@
-import { OpenAIApi, Configuration } from "openai-edge";
-
-const config = new Configuration({
-  apiKey: process.env.OPEN_AI_API_KEY,
-});
-
-const openai = new OpenAIApi(config);
-
 export async function getEmbeddings(text: string): Promise<number[]> {
   try {
     const response = await fetch("https://api.openai.com/v1/embeddings", {
