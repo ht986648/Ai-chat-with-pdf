@@ -1,87 +1,55 @@
-import { streamText } from "ai";
-import { openai } from "@ai-sdk/openai";
-import { Message } from "ai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
+import { NextRequest, NextResponse } from "next/server";
 import { getContext } from "@/lib/context";
 import { db } from "@/lib/db";
-import { chats, messages as _messages } from "@/lib/db/schema";
+import { messages } from "@/lib/db/schema";
 import { eq } from "drizzle-orm";
-import { NextResponse } from "next/server";
 
+// Set up Gemini
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
+const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
+export async function POST(req: NextRequest) {
+  const body = await req.json();
+  const { chatId, messages: incomingMessages } = body;
 
+  // Get the last message content
+  const lastMessage = incomingMessages[incomingMessages.length - 1];
+  if (!lastMessage?.content) {
+    return NextResponse.json({ error: "No message content" }, { status: 400 });
+  }
 
+  // Save user message to database first
+  await db.insert(messages).values({
+    chatId,
+    content: lastMessage.content,
+    role: "user",
+  });
 
-export async function POST(req: Request) {
+  // Get context from the database for this chat
+  const chatMessages = await db.select().from(messages).where(eq(messages.chatId, chatId));
+  
+  const prompt = chatMessages
+    .map((msg: any) => `${msg.role === "user" ? "User" : "Assistant"}: ${msg.content}`)
+    .join("\n") + `\nUser: ${lastMessage.content}\nAssistant:`;
+
   try {
-    const { messages, chatId } = await req.json();
-    const _chats = await db.select().from(chats).where(eq(chats.id, chatId));
-    if (_chats.length != 1) {
-      return NextResponse.json({ error: "chat not found" }, { status: 404 });
-    }
-    const fileKey = _chats[0].fileKey;
-    const lastMessage = messages[messages.length - 1];
-    console.log('🔍 Searching for context with query:', lastMessage.content);
-    console.log('📁 Using fileKey:', fileKey);
-    const context = await getContext(lastMessage.content, fileKey);
-    console.log('📄 Retrieved context length:', context?.length || 0);
-    console.log('📄 Context preview:', context?.substring(0, 200) + '...');
+    const result = await model.generateContent({
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+    });
 
-    const prompt = {
-      role: "system",
-      content: `AI assistant is a brand new, powerful, human-like artificial intelligence.
-      The traits of AI include expert knowledge, helpfulness, cleverness, and articulateness.
-      AI is a well-behaved and well-mannered individual.
-      AI is always friendly, kind, and inspiring, and he is eager to provide vivid and thoughtful responses to the user.
-      AI has the sum of all knowledge in their brain, and is able to accurately answer nearly any question about any topic in conversation.
-      AI assistant is a big fan of Pinecone and Vercel.
-      START CONTEXT BLOCK
-      ${context}
-      END OF CONTEXT BLOCK
-      AI assistant will take into account any CONTEXT BLOCK that is provided in a conversation.
-      If the context does not provide the answer to question, the AI assistant will say, "I'm sorry, but I don't know the answer to that question".
-      AI assistant will not apologize for previous responses, but instead will indicated new information was gained.
-      AI assistant will not invent anything that is not drawn directly from the context.
-      `,
-    };
+    const text = await result.response.text();
 
-    // save user message into db
-    await db.insert(_messages).values({
+    // Save assistant message to DB (using "user" role temporarily)
+    await db.insert(messages).values({
       chatId,
-      content: lastMessage.content,
+      content: text,
       role: "user",
     });
 
-    const result = await streamText({
-      model: openai('gpt-3.5-turbo'),
-      messages: [
-        prompt,
-        ...messages.filter((message: Message) => message.role === "user"),
-      ],
-    });
-
-    // save ai message into db after completion
-    const completion = await result.text;
-    await db.insert(_messages).values({
-      chatId,
-      content: completion,
-      role: "system",
-    });
-
-    // Add context information as a separate message for debugging
-    if (context && context.trim()) {
-      await db.insert(_messages).values({
-        chatId,
-        content: `📄 **Context used:** ${context.substring(0, 500)}${context.length > 500 ? '...' : ''}`,
-        role: "system",
-      });
-    }
-
-    return result.toTextStreamResponse();
-  } catch (error: unknown) {
-    console.error("Error in chat API:", error);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ completion: text });
+  } catch (error) {
+    console.error("Gemini error:", error);
+    return new NextResponse("Gemini Error", { status: 500 });
   }
 }
